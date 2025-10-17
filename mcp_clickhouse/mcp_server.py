@@ -17,7 +17,7 @@ from dataclasses import dataclass, field, asdict, is_dataclass
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
-from mcp_clickhouse.mcp_env import get_config, get_chdb_config
+from mcp_clickhouse.mcp_env import get_config, get_chdb_config, get_mcp_config
 from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
 
 
@@ -63,7 +63,6 @@ logger = logging.getLogger(MCP_SERVER_NAME)
 
 QUERY_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=10)
 atexit.register(lambda: QUERY_EXECUTOR.shutdown(wait=True))
-SELECT_QUERY_TIMEOUT_SECS = 30
 
 load_dotenv()
 
@@ -186,7 +185,8 @@ def run_select_query(query: str):
     try:
         future = QUERY_EXECUTOR.submit(execute_query, query)
         try:
-            result = future.result(timeout=SELECT_QUERY_TIMEOUT_SECS)
+            timeout_secs = get_mcp_config().query_timeout
+            result = future.result(timeout=timeout_secs)
             # Check if we received an error structure from execute_query
             if isinstance(result, dict) and "error" in result:
                 logger.warning(f"Query failed: {result['error']}")
@@ -198,9 +198,9 @@ def run_select_query(query: str):
                 }
             return result
         except concurrent.futures.TimeoutError:
-            logger.warning(f"Query timed out after {SELECT_QUERY_TIMEOUT_SECS} seconds: {query}")
+            logger.warning(f"Query timed out after {timeout_secs} seconds: {query}")
             future.cancel()
-            raise ToolError(f"Query timed out after {SELECT_QUERY_TIMEOUT_SECS} seconds")
+            raise ToolError(f"Query timed out after {timeout_secs} seconds")
     except ToolError:
         raise
     except Exception as e:
@@ -295,7 +295,8 @@ def run_chdb_select_query(query: str):
     try:
         future = QUERY_EXECUTOR.submit(execute_chdb_query, query)
         try:
-            result = future.result(timeout=SELECT_QUERY_TIMEOUT_SECS)
+            timeout_secs = get_mcp_config().query_timeout
+            result = future.result(timeout=timeout_secs)
             # Check if we received an error structure from execute_chdb_query
             if isinstance(result, dict) and "error" in result:
                 logger.warning(f"chDB query failed: {result['error']}")
@@ -306,12 +307,12 @@ def run_chdb_select_query(query: str):
             return result
         except concurrent.futures.TimeoutError:
             logger.warning(
-                f"chDB query timed out after {SELECT_QUERY_TIMEOUT_SECS} seconds: {query}"
+                f"chDB query timed out after {timeout_secs} seconds: {query}"
             )
             future.cancel()
             return {
                 "status": "error",
-                "message": f"chDB query timed out after {SELECT_QUERY_TIMEOUT_SECS} seconds",
+                "message": f"chDB query timed out after {timeout_secs} seconds",
             }
     except Exception as e:
         logger.error(f"Unexpected error in run_chdb_select_query: {e}")
