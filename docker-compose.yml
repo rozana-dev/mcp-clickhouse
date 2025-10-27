@@ -1,0 +1,14 @@
+version: '3.9'
+
+services:
+  mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile   # uses the Dockerfile in the repo
+    container_name: mcp-clickhouse
+    env_file:
+      - .env
+    ports:
+      - "8222:8000"
+    restart: unless-stopped
+
