@@ -137,10 +137,10 @@ def list_databases():
 
 def list_tables(database: str, like: Optional[str] = None, not_like: Optional[str] = None):
     """List available ClickHouse tables in a database, including schema, comment,
-    row count, and column count. Only returns tables with 'newoms' prefix."""
+    row count, and column count. Returns tables starting with 'newoms' excluding 'newoms_orders_denormalized'."""
     logger.info(f"Listing tables in database '{database}'")
     client = create_clickhouse_client()
-    query = f"SELECT database, name, engine, create_table_query, dependencies_database, dependencies_table, engine_full, sorting_key, primary_key, total_rows, total_bytes, total_bytes_uncompressed, parts, active_parts, total_marks, comment FROM system.tables WHERE database = {format_query_value(database)} AND name LIKE 'newoms%'"
+    query = f"SELECT database, name, engine, create_table_query, dependencies_database, dependencies_table, engine_full, sorting_key, primary_key, total_rows, total_bytes, total_bytes_uncompressed, parts, active_parts, total_marks, comment FROM system.tables WHERE database = {format_query_value(database)} AND name LIKE 'newoms%' AND name != 'newoms_orders_denormalized'"
     if like:
         query += f" AND name LIKE {format_query_value(like)}"
 
@@ -324,6 +324,50 @@ def chdb_initial_prompt() -> str:
     return CHDB_PROMPT
 
 
+def get_query_rules() -> str:
+    """Get ClickHouse query rules and best practices for the analytics database.
+    
+    Returns important considerations and formulas to follow when writing queries.
+    """
+    rules = {
+        "engine_considerations": [
+            "Always use FINAL keyword in queries - the table uses ReplacingMergeTree engine which may have duplicate rows",
+            "FINAL ensures you get the latest version of each row"
+        ],
+        "sales_calculation": [
+            "Sales value formula: quantity * sale_price",
+            "Do NOT use order_total_amount directly for item-level sales calculations",
+            "For delivered items: delivered_quantity * sale_price"
+        ],
+        "data_deduplication": [
+            "The newoms_orders_denormalized table is denormalized and contains duplicate rows for each item in an order",
+            "Always use DISTINCT on order_id when counting unique orders",
+            "Use DISTINCT on customer_id when counting unique customers"
+        ],
+        "filtering_best_practices": [
+            "Always filter _peerdb_is_deleted = 0 to exclude deleted records",
+            "Use toDate(order_created_at) = today() for today's data",
+            "Exclude test facilities: KORAMANGALA_STORE, ROZANA_TEST_WH1"
+        ],
+        "query_structure_template": [
+            "SELECT SUM(quantity * sale_price) as total_sales FROM analytics.newoms_orders_denormalized FINAL",
+            "WHERE toDate(order_created_at) = today() AND _peerdb_is_deleted = 0",
+            "AND facility_name NOT IN ('KORAMANGALA_STORE', 'ROZANA_TEST_WH1')"
+        ],
+        "key_columns": {
+            "order_id": "Unique order identifier",
+            "order_created_at": "Order creation timestamp",
+            "quantity": "Quantity ordered for an item",
+            "sale_price": "Sale price per unit",
+            "delivered_quantity": "Quantity actually delivered",
+            "order_total_amount": "Total order amount (use only for order-level aggregations)",
+            "facility_name": "Warehouse/facility name",
+            "_peerdb_is_deleted": "Deletion flag (0 = active, 1 = deleted)"
+        }
+    }
+    return json.dumps(rules, indent=2)
+
+
 def _init_chdb_client():
     """Initialize the global chDB client instance."""
     try:
@@ -347,6 +391,15 @@ if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
     mcp.add_tool(Tool.from_function(list_databases))
     mcp.add_tool(Tool.from_function(list_tables))
     mcp.add_tool(Tool.from_function(run_select_query))
+    mcp.add_tool(Tool.from_function(get_query_rules))
+
+    # Add query rules as a prompt so it's always available during tool discovery
+    query_rules_prompt = Prompt.from_function(
+        get_query_rules,
+        name="query_rules",
+        description="ClickHouse query rules and best practices for the analytics database. Always review these rules before writing queries.",
+    )
+    mcp.add_prompt(query_rules_prompt)
     logger.info("ClickHouse tools registered")
 
 
